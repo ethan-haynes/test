@@ -1,0 +1,3 @@
+tensorflow==2.7.0
+wikipedia-api==0.5.4
+numpy==1.19.5
