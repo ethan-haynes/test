@@ -1,46 +1,66 @@
-import wikipedia
-import re
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.layers import Embedding, LSTM, Dense
-from tensorflow.keras.models import Sequential
-import pickle
+import tensorflow as tf
+from transformers import GPT2Tokenizer, TFGPT2LMHeadModel
+import wikipediaapi
 
-# Define the Wikipedia page title and section to retrieve
-page_title = "Artificial intelligence"
-section_title = "Applications"
+# Set up Wikipedia API
+wiki = wikipediaapi.Wikipedia('en')
 
-# Retrieve the section text from the Wikipedia page
-page = wikipedia.page(page_title)
-section = page.section(section_title)
+# Set up tokenizer and model
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+model = TFGPT2LMHeadModel.from_pretrained('gpt2', pad_token_id=tokenizer.eos_token_id)
 
-# Preprocess the section text
-section = re.sub(r'\n+', ' ', section)  # Replace newlines with spaces
-section = re.sub(r'\[[^()]*\]', '', section)  # Remove footnotes
+# Define training parameters
+batch_size = 4
+epochs = 2
+learning_rate = 1e-4
 
-# Tokenize and pad the section text
-tokenizer = Tokenizer(num_words=10000, oov_token="<OOV>")
-tokenizer.fit_on_texts([section])
-sequences = tokenizer.texts_to_sequences([section])
-padded_sequences = pad_sequences(sequences, padding='post', maxlen=50)
+# Define function to preprocess input text
+def preprocess(text):
+    text = text.strip().replace('\n', ' ')
+    tokens = tokenizer.encode(text, add_special_tokens=True, max_length=512)
+    input_ids = tf.convert_to_tensor(tokens[:-1], dtype=tf.int32)
+    target_ids = tf.convert_to_tensor(tokens[1:], dtype=tf.int32)
+    return input_ids, target_ids
 
-# Define the model architecture
-model = Sequential([
-    Embedding(input_dim=10000, output_dim=16, input_length=50),
-    LSTM(16),
-    Dense(1, activation='sigmoid')
-])
+# Define function to fetch training data from Wikipedia
+def fetch_training_data():
+    titles = [
+        'Artificial intelligence',
+        'Machine learning',
+        'Natural language processing',
+        'Recurrent neural network',
+        'Transformer (machine learning)',
+        'Generative Pre-trained Transformer 2'
+    ]
+    text = ''
+    for title in titles:
+        page = wiki.page(title)
+        if page.exists():
+            text += page.text
+    return text
 
-# Compile the model
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+# Fetch training data from Wikipedia
+training_data = fetch_training_data()
 
-# Train the model on the padded sequences
-labels = [1] * len(padded_sequences)
-model.fit(padded_sequences, labels, epochs=10, batch_size=1)
+# Preprocess the training data and convert it to a TensorFlow dataset
+dataset = tf.data.Dataset.from_tensor_slices(training_data).map(preprocess).shuffle(10000).batch(batch_size)
 
-# Save the trained model to a file
-model.save("model.h5")
+# Set up optimizer and loss function
+optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
-# Save the tokenizer used during training to a pickled file
-with open('tokenizer.pkl', 'wb') as f:
-    pickle.dump(tokenizer, f)
+# Train the model
+for epoch in range(epochs):
+    epoch_loss = 0.0
+    for batch in dataset:
+        with tf.GradientTape() as tape:
+            logits = model(batch[0], training=True)[0]
+            loss = loss_fn(batch[1], logits)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        epoch_loss += loss.numpy()
+    print('Epoch {} Loss: {:.4f}'.format(epoch+1, epoch_loss/len(dataset)))
+
+# Save the trained model and tokenizer to files
+model.save_pretrained('my_chatgpt_model')
+tokenizer.save_pretrained('my_chatgpt_model')
